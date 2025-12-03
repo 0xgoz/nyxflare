@@ -1,0 +1,9 @@
+/target
+/Cargo.lock
+config.yaml
+config.yml
+*.swp
+*.swo
+*~
+.DS_Store
+config/accounts.json
