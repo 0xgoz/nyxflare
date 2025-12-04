@@ -183,7 +183,6 @@ fn handle_add_account_key<B: DnsBackend>(code: KeyCode, app: &mut App<B>) -> Res
     };
 
     match code {
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Esc => {
             app.mode = Mode::Normal;
             app.ensure_onboarding_prompt();
@@ -224,7 +223,6 @@ fn handle_record_form_key<B: DnsBackend>(code: KeyCode, app: &mut App<B>) -> Res
         KeyCode::Esc => {
             app.mode = Mode::Normal;
         }
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Tab | KeyCode::Down => form.field_index = (form.field_index + 1).min(4),
         KeyCode::BackTab | KeyCode::Up => {
             if form.field_index > 0 {
@@ -321,7 +319,6 @@ fn handle_search_key<B: DnsBackend>(code: KeyCode, app: &mut App<B>) -> Result<b
         KeyCode::Backspace => {
             current.pop();
         }
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Char(c) => current.push(c),
         _ => {}
     }
@@ -332,7 +329,7 @@ fn handle_search_key<B: DnsBackend>(code: KeyCode, app: &mut App<B>) -> Result<b
 fn draw<B: DnsBackend>(frame: &mut Frame<'_>, app: &mut App<B>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(3)])
+        .constraints([Constraint::Min(5), Constraint::Length(4)])
         .split(frame.size());
 
     let body_chunks = Layout::default()
@@ -497,7 +494,8 @@ fn draw_zones_and_records<B: DnsBackend>(
 }
 
 fn draw_status<B: DnsBackend>(frame: &mut Frame<'_>, area: ratatui::prelude::Rect, app: &App<B>) {
-    let footer = Paragraph::new(app.status_message())
+    let (line1, line2) = app.status_message();
+    let footer = Paragraph::new(vec![Line::raw(line1), Line::raw(line2)])
         .block(Block::default().borders(Borders::ALL).title("Status"));
     frame.render_widget(footer, area);
 }
@@ -1153,11 +1151,12 @@ impl<B: DnsBackend> App<B> {
         self.record_page = page.min(self.record_page_count(total).saturating_sub(1));
     }
 
-    fn status_message(&self) -> String {
-        let help = "q: quit  r: refresh  Tab/Shift+Tab: focus  ↑/↓: move  /: search  n/e/d: new/edit/del  PgUp/PgDn: pages";
+    fn status_message(&self) -> (String, String) {
+        let help = "q: quit  a: add account  r: refresh  Tab/Shift+Tab: focus  ↑/↓: move  /: search  n/e/d: new/edit/del  PgUp/PgDn: pages";
         if self.accounts.is_empty() {
-            return format!(
-                "No accounts configured. Press 'a' to add one. | {help} | Adding accounts stores tokens locally"
+            return (
+                help.to_string(),
+                "No accounts configured. Press 'a' to add one. Tokens are stored locally.".to_string(),
             );
         }
 
@@ -1183,25 +1182,28 @@ impl<B: DnsBackend> App<B> {
 
         let filtered_count = self.filtered_records().len();
         let page_count = self.record_page_count(filtered_count).max(1);
+        let filter_suffix = if self.record_filter.trim().is_empty() {
+            ""
+        } else {
+            " filtered"
+        };
 
-        format!(
-            "{} | Account: {} ({}/{}) | Zone: {} ({}/{}) | Records: page {}/{} ({} shown{}) | {}",
-            help,
-            account_name,
-            account_index,
-            self.accounts.len(),
-            zone_name,
-            zone_index,
-            zone_total,
-            self.record_page + 1,
-            page_count,
-            self.paged_records().len(),
-            if self.record_filter.trim().is_empty() {
-                ""
-            } else {
-                " filtered"
-            },
-            self.last_message
+        (
+            help.to_string(),
+            format!(
+                "Account: {} ({}/{}) | Zone: {} ({}/{}) | Records: page {}/{} ({} shown{}) | {}",
+                account_name,
+                account_index,
+                self.accounts.len(),
+                zone_name,
+                zone_index,
+                zone_total,
+                self.record_page + 1,
+                page_count,
+                self.paged_records().len(),
+                filter_suffix,
+                self.last_message
+            ),
         )
     }
 
@@ -1857,6 +1859,61 @@ mod tests {
     }
 
     #[test]
+    fn add_account_form_allows_typing_command_keys() {
+        let mut app = App::new(temp_config_path("add_form"), vec![], MockBackend::new()).unwrap();
+        let quit = handle_add_account_key(KeyCode::Char('q'), &mut app).unwrap();
+
+        assert!(!quit, "q should not quit while typing");
+        if let Mode::AddingAccount(form) = app.mode {
+            assert_eq!(form.name, "q");
+        } else {
+            panic!("app left add account mode");
+        }
+    }
+
+    #[test]
+    fn normal_mode_can_start_add_account_when_accounts_exist() {
+        let mut app = app_with_records("add_account", vec![]);
+        let quit = handle_normal_key(KeyCode::Char('a'), &mut app).unwrap();
+
+        assert!(!quit, "a should not quit the app");
+        assert!(
+            matches!(app.mode, Mode::AddingAccount(_)),
+            "app should enter add-account mode"
+        );
+    }
+
+    #[test]
+    fn record_form_allows_typing_command_keys() {
+        let mut app = app_with_records("record_form", vec![]);
+        app.start_record_form(false);
+
+        let quit = handle_record_form_key(KeyCode::Char('q'), &mut app).unwrap();
+        assert!(!quit, "q should not quit while editing a record");
+
+        if let Mode::RecordForm(form) = app.mode {
+            assert_eq!(form.draft.name, "q");
+        } else {
+            panic!("app left record form mode");
+        }
+    }
+
+    #[test]
+    fn search_overlay_allows_typing_command_keys() {
+        let mut app = app_with_records("search_overlay", vec![]);
+        app.mode = Mode::Searching(String::new());
+
+        let quit = handle_search_key(KeyCode::Char('q'), &mut app).unwrap();
+        assert!(!quit, "q should not quit while searching");
+
+        if let Mode::Searching(text) = app.mode {
+            assert_eq!(text, "q");
+        } else {
+            panic!("app left search mode");
+        }
+    }
+
+    #[test]
     fn filtered_records_matches_across_fields() {
         let records = vec![
             record("1", "api.demo.example.com", "A", "203.0.113.1"),
@@ -1946,14 +2003,14 @@ mod tests {
 
         app.update_record_page_size(5); // page size 2
         app.record_filter = "item".to_string();
-        let message = app.status_message();
+        let (_, details) = app.status_message();
 
         assert!(
-            message.contains("Records: page 1/2"),
+            details.contains("Records: page 1/2"),
             "status did not include page count: {}",
-            message
+            details
         );
-        assert!(message.contains("filtered"), "status did not mark filter");
+        assert!(details.contains("filtered"), "status did not mark filter");
     }
 
     fn cf_account() -> Account {
