@@ -101,12 +101,12 @@ fn run_app<B: DnsBackend>(
     loop {
         terminal.draw(|frame| draw(frame, app))?;
 
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press && handle_key(key.code, app)? {
-                    return Ok(());
-                }
-            }
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && handle_key(key.code, app)?
+        {
+            return Ok(());
         }
     }
 }
@@ -1129,7 +1129,7 @@ impl<B: DnsBackend> App<B> {
         if total == 0 {
             0
         } else {
-            (total + self.page_size() - 1) / self.page_size()
+            total.div_ceil(self.page_size())
         }
     }
 
@@ -1788,10 +1788,10 @@ impl DnsBackend for MockBackend {
         record: DnsRecord,
     ) -> Result<DnsRecord> {
         self.ensure_zone(zone);
-        if let Some(records) = self.records.get_mut(&zone.id) {
-            if let Some(existing) = records.iter_mut().find(|r| r.id == record.id) {
-                *existing = record.clone();
-            }
+        if let Some(records) = self.records.get_mut(&zone.id)
+            && let Some(existing) = records.iter_mut().find(|r| r.id == record.id)
+        {
+            *existing = record.clone();
         }
         Ok(record)
     }
