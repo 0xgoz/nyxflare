@@ -70,6 +70,12 @@ cargo build --release
 ./target/release/nyxflare
 ```
 
+## Updating
+- `cargo install --git https://github.com/0xgoz/nyxflare --force` (reinstalls the latest tag from the repo)
+- If you downloaded a tarball/zip (macOS/Linux): re-run the download commands for your platform, then `chmod +x nyxflare && sudo mv nyxflare /usr/local/bin/` (or wherever you put it) to overwrite the old binary. Windows: grab the latest `.zip`, extract, and replace `nyxflare.exe` on your PATH.
+- From source: `git pull` then `cargo build --release` and replace your installed binary with `./target/release/nyxflare`
+- Verify with `nyxflare --version` (tags map to releases like `v0.2.0`)
+
 ## Configuration
 On first run, nyxflare will prompt you to add an account and write config to:
 - macOS/Linux: `~/.config/nyxflare/accounts.json`

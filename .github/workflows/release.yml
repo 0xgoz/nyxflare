@@ -86,14 +86,31 @@ jobs:
             sha256sum ${{ matrix.name }} > ${{ matrix.name }}.sha256
           fi
 
-      - name: Upload Release Assets
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ matrix.name }}
+            ${{ matrix.name }}.sha256
+
+  publish-release:
+    name: Publish Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           make_latest: ${{ !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') }}
           prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') }}
-          files: |
-            ${{ matrix.name }}
-            ${{ matrix.name }}.sha256
+          files: dist/*
           body: |
             ## nyxflare ${{ github.ref_name }}
 
