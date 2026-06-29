@@ -223,18 +223,14 @@ fn handle_record_form_key<B: DnsBackend>(code: KeyCode, app: &mut App<B>) -> Res
         KeyCode::Esc => {
             app.mode = Mode::Normal;
         }
-        KeyCode::Tab | KeyCode::Down => form.field_index = (form.field_index + 1).min(4),
-        KeyCode::BackTab | KeyCode::Up => {
-            if form.field_index > 0 {
-                form.field_index -= 1;
-            }
-        }
-        KeyCode::Char(' ') if form.field_index == 4 => {
+        KeyCode::Tab | KeyCode::Down => form.next_field(),
+        KeyCode::BackTab | KeyCode::Up => form.previous_field(),
+        KeyCode::Char(' ') if form.field_index == form.proxied_field_index() => {
             form.draft.proxied = !form.draft.proxied;
         }
         KeyCode::Enter => {
-            if form.field_index < 4 {
-                form.field_index += 1;
+            if form.field_index < form.max_field_index() {
+                form.next_field();
             } else {
                 let record_id = form.target_id.clone().unwrap_or_else(|| "new".to_string());
                 match form.draft.to_record(record_id.clone()) {
@@ -255,6 +251,7 @@ fn handle_record_form_key<B: DnsBackend>(code: KeyCode, app: &mut App<B>) -> Res
             }
             1 => {
                 form.draft.record_type.pop();
+                form.clamp_field_index();
             }
             2 => {
                 form.draft.content.pop();
@@ -262,13 +259,20 @@ fn handle_record_form_key<B: DnsBackend>(code: KeyCode, app: &mut App<B>) -> Res
             3 => {
                 form.draft.ttl.pop();
             }
+            4 if form.draft.is_mx() => {
+                form.draft.priority.pop();
+            }
             _ => {}
         },
         KeyCode::Char(c) => match form.field_index {
             0 => form.draft.name.push(c),
-            1 => form.draft.record_type.push(c),
+            1 => {
+                form.draft.record_type.push(c);
+                form.clamp_field_index();
+            }
             2 => form.draft.content.push(c),
             3 => form.draft.ttl.push(c),
+            4 if form.draft.is_mx() => form.draft.priority.push(c),
             _ => {}
         },
         _ => {}
@@ -546,18 +550,23 @@ fn draw_account_form(frame: &mut Frame<'_>, form: &AccountForm) {
 
 fn draw_record_form(frame: &mut Frame<'_>, form: &RecordForm) {
     let area = centered_rect(70, 60, frame.size());
-    let labels = ["Name", "Type", "Content", "TTL", "Proxied"];
-    let values = [
-        form.draft.name.clone(),
-        form.draft.record_type.clone(),
-        form.draft.content.clone(),
-        form.draft.ttl.clone(),
+    let mut fields = vec![
+        ("Name", form.draft.name.clone()),
+        ("Type", form.draft.record_type.clone()),
+        ("Content", form.draft.content.clone()),
+        ("TTL", form.draft.ttl.clone()),
+    ];
+    if form.draft.is_mx() {
+        fields.push(("Priority", form.draft.priority.clone()));
+    }
+    fields.push((
+        "Proxied",
         if form.draft.proxied {
             "true".to_string()
         } else {
             "false".to_string()
         },
-    ];
+    ));
 
     let mut lines = vec![
         Line::from(Span::styled(
@@ -574,9 +583,9 @@ fn draw_record_form(frame: &mut Frame<'_>, form: &RecordForm) {
         Line::from(""),
     ];
 
-    for (idx, label) in labels.iter().enumerate() {
+    for (idx, (label, value)) in fields.iter().enumerate() {
         let active = idx == form.field_index;
-        let mut display = values[idx].clone();
+        let mut display = value.clone();
         if display.is_empty() {
             display = "<required>".to_string();
         }
@@ -734,6 +743,7 @@ struct DnsRecord {
     content: String,
     ttl: u32,
     proxied: bool,
+    priority: Option<u16>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -853,6 +863,34 @@ struct RecordForm {
     target_id: Option<String>,
 }
 
+impl RecordForm {
+    fn field_count(&self) -> usize {
+        if self.draft.is_mx() { 6 } else { 5 }
+    }
+
+    fn max_field_index(&self) -> usize {
+        self.field_count() - 1
+    }
+
+    fn proxied_field_index(&self) -> usize {
+        self.max_field_index()
+    }
+
+    fn next_field(&mut self) {
+        self.field_index = (self.field_index + 1).min(self.max_field_index());
+    }
+
+    fn previous_field(&mut self) {
+        if self.field_index > 0 {
+            self.field_index -= 1;
+        }
+    }
+
+    fn clamp_field_index(&mut self) {
+        self.field_index = self.field_index.min(self.max_field_index());
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RecordDraft {
     name: String,
@@ -860,6 +898,7 @@ struct RecordDraft {
     content: String,
     ttl: String,
     proxied: bool,
+    priority: String,
 }
 
 impl Default for RecordDraft {
@@ -870,6 +909,7 @@ impl Default for RecordDraft {
             content: String::new(),
             ttl: "300".to_string(),
             proxied: true,
+            priority: "10".to_string(),
         }
     }
 }
@@ -882,7 +922,15 @@ impl RecordDraft {
             content: record.content.clone(),
             ttl: record.ttl.to_string(),
             proxied: record.proxied,
+            priority: record
+                .priority
+                .map(|priority| priority.to_string())
+                .unwrap_or_else(|| "10".to_string()),
         }
+    }
+
+    fn is_mx(&self) -> bool {
+        self.record_type.trim().eq_ignore_ascii_case("MX")
     }
 
     fn to_record(&self, id: String) -> Result<DnsRecord> {
@@ -894,6 +942,16 @@ impl RecordDraft {
         if self.name.trim().is_empty() || self.record_type.trim().is_empty() {
             return Err(anyhow!("Name and type are required"));
         }
+        let priority = if self.is_mx() {
+            Some(
+                self.priority
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow!("Priority must be a number for MX records"))?,
+            )
+        } else {
+            None
+        };
         Ok(DnsRecord {
             id,
             name: self.name.trim().to_string(),
@@ -901,6 +959,7 @@ impl RecordDraft {
             content: self.content.trim().to_string(),
             ttl,
             proxied: self.proxied,
+            priority,
         })
     }
 }
@@ -1156,7 +1215,8 @@ impl<B: DnsBackend> App<B> {
         if self.accounts.is_empty() {
             return (
                 help.to_string(),
-                "No accounts configured. Press 'a' to add one. Tokens are stored locally.".to_string(),
+                "No accounts configured. Press 'a' to add one. Tokens are stored locally."
+                    .to_string(),
             );
         }
 
@@ -1485,6 +1545,7 @@ impl CloudflareBackend {
                 content: r.content,
                 ttl: r.ttl.unwrap_or(300),
                 proxied: r.proxied.unwrap_or(false),
+                priority: r.priority,
             })
             .collect())
     }
@@ -1667,6 +1728,7 @@ struct CfRecord {
     content: String,
     ttl: Option<u32>,
     proxied: Option<bool>,
+    priority: Option<u16>,
 }
 
 impl CfRecord {
@@ -1678,6 +1740,7 @@ impl CfRecord {
             content: self.content,
             ttl: self.ttl.unwrap_or(300),
             proxied: self.proxied.unwrap_or(false),
+            priority: self.priority,
         }
     }
 }
@@ -1690,6 +1753,8 @@ struct CfRecordWrite {
     content: String,
     ttl: u32,
     proxied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<u16>,
 }
 
 impl CfRecordWrite {
@@ -1700,6 +1765,11 @@ impl CfRecordWrite {
             content: record.content.clone(),
             ttl: record.ttl,
             proxied: record.proxied,
+            priority: if record.record_type.eq_ignore_ascii_case("MX") {
+                record.priority
+            } else {
+                None
+            },
         }
     }
 }
@@ -1725,6 +1795,7 @@ impl MockBackend {
                     content: "203.0.113.10".to_string(),
                     ttl: 300,
                     proxied: true,
+                    priority: None,
                 },
                 DnsRecord {
                     id: format!("{}-b", zone.id),
@@ -1733,6 +1804,7 @@ impl MockBackend {
                     content: "edge.service.net".to_string(),
                     ttl: 120,
                     proxied: true,
+                    priority: None,
                 },
                 DnsRecord {
                     id: format!("{}-c", zone.id),
@@ -1741,6 +1813,7 @@ impl MockBackend {
                     content: "mail.{zone}".replace("{zone}", &zone.name),
                     ttl: 3600,
                     proxied: false,
+                    priority: Some(10),
                 },
             ]
         });
@@ -1840,6 +1913,7 @@ mod tests {
             content: content.to_string(),
             ttl: 300,
             proxied: false,
+            priority: None,
         }
     }
 
@@ -2011,6 +2085,37 @@ mod tests {
             details
         );
         assert!(details.contains("filtered"), "status did not mark filter");
+    }
+
+    #[test]
+    fn mx_record_draft_requires_priority() {
+        let draft = RecordDraft {
+            name: "example.com".to_string(),
+            record_type: "MX".to_string(),
+            content: "mail.example.com".to_string(),
+            ttl: "300".to_string(),
+            proxied: false,
+            priority: "10".to_string(),
+        };
+
+        let record = draft.to_record("mx-1".to_string()).unwrap();
+
+        assert_eq!(record.priority, Some(10));
+    }
+
+    #[test]
+    fn cloudflare_write_includes_priority_only_for_mx_records() {
+        let mut mx = record("mx-1", "example.com", "MX", "mail.example.com");
+        mx.priority = Some(20);
+        let mx_payload = serde_json::to_value(CfRecordWrite::from_record(&mx)).unwrap();
+
+        assert_eq!(mx_payload["priority"], 20);
+
+        let mut a = record("a-1", "api.example.com", "A", "203.0.113.10");
+        a.priority = Some(20);
+        let a_payload = serde_json::to_value(CfRecordWrite::from_record(&a)).unwrap();
+
+        assert!(a_payload.get("priority").is_none());
     }
 
     fn cf_account() -> Account {
